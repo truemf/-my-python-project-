@@ -14,7 +14,7 @@ export const PromptInput: React.FC<PromptInputProps> = ({ value, onChange, place
       id="story-prompt"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder || "Describe the beginning of your story, a character, or a magical place..."}
+      placeholder={placeholder || "Enter a topic or short prompt for your content..."}
       disabled={disabled}
       rows={5}
       className="
