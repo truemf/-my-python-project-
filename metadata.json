@@ -1,0 +1,5 @@
+{
+  "name": "AI Story Weaver",
+  "description": "An application that uses the Gemini API to generate creative stories based on user prompts. Enter your idea and let the AI weave a unique tale for you.",
+  "requestFramePermissions": []
+}
