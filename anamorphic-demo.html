@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Canvas Anamorphic Perspective Demo</title>
+    <style>
+      :root { font-family: system-ui, sans-serif; }
+      body { margin: 0; background: #111; color: #f2f2f2; }
+      main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      canvas { width: 100%; height: auto; background: #1c1c1c; border: 1px solid #444; }
+      .controls { margin: 14px 0 6px; display: flex; gap: 18px; flex-wrap: wrap; }
+      label { display: grid; gap: 6px; font-size: 14px; min-width: 220px; }
+      input[type='range'] { width: 100%; }
+      code { background: #222; padding: 1px 5px; border-radius: 4px; }
+      p { line-height: 1.35; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Anamorphic Canvas Demo (manual perspective math)</h1>
+      <p>
+        Left: the deliberately <strong>distorted paint</strong> on a flat surface.<br />
+        Right: what a camera would recover if it used an estimated perspective.
+        At the calibrated <em>sweet spot</em> (<code>offsetX = 0</code>, <code>offsetY = 0</code>) the image looks correct.
+      </p>
+
+      <div class="controls">
+        <label>
+          Viewer offset X (simulated wrong viewpoint)
+          <input id="offsetX" type="range" min="-140" max="140" value="0" />
+        </label>
+        <label>
+          Viewer offset Y (simulated wrong viewpoint)
+          <input id="offsetY" type="range" min="-110" max="110" value="0" />
+        </label>
+      </div>
+
+      <div class="row">
+        <canvas id="paintCanvas" width="520" height="380"></canvas>
+        <canvas id="viewCanvas" width="520" height="380"></canvas>
+      </div>
+    </main>
+
+    <script>
+      const paintCanvas = document.getElementById('paintCanvas');
+      const viewCanvas = document.getElementById('viewCanvas');
+      const paintCtx = paintCanvas.getContext('2d');
+      const viewCtx = viewCanvas.getContext('2d');
+      const offsetX = document.getElementById('offsetX');
+      const offsetY = document.getElementById('offsetY');
+
+      const srcW = 260;
+      const srcH = 180;
+      const sourceCanvas = document.createElement('canvas');
+      sourceCanvas.width = srcW;
+      sourceCanvas.height = srcH;
+      const sourceCtx = sourceCanvas.getContext('2d');
+
+      // Build a recognizable flat image so distortion is obvious.
+      function drawSource() {
+        const g = sourceCtx.createLinearGradient(0, 0, srcW, srcH);
+        g.addColorStop(0, '#35d0ff');
+        g.addColorStop(1, '#8856ff');
+        sourceCtx.fillStyle = g;
+        sourceCtx.fillRect(0, 0, srcW, srcH);
+
+        sourceCtx.strokeStyle = 'rgba(255,255,255,0.35)';
+        for (let x = 0; x <= srcW; x += 20) {
+          sourceCtx.beginPath();
+          sourceCtx.moveTo(x, 0);
+          sourceCtx.lineTo(x, srcH);
+          sourceCtx.stroke();
+        }
+        for (let y = 0; y <= srcH; y += 20) {
+          sourceCtx.beginPath();
+          sourceCtx.moveTo(0, y);
+          sourceCtx.lineTo(srcW, y);
+          sourceCtx.stroke();
+        }
+
+        sourceCtx.fillStyle = 'white';
+        sourceCtx.font = 'bold 48px system-ui';
+        sourceCtx.fillText('LOOK', 64, 92);
+        sourceCtx.font = 'bold 28px system-ui';
+        sourceCtx.fillText('from sweet spot', 34, 132);
+      }
+
+      // Four corners of the distorted painting on the "floor".
+      // This shape is very skewed; it is the anamorphic result.
+      const paintQuad = [
+        { x: 35, y: 110 },
+        { x: 500, y: 70 },
+        { x: 460, y: 330 },
+        { x: 90, y: 350 }
+      ];
+
+      const rectCorners = [
+        { x: 0, y: 0 },
+        { x: srcW, y: 0 },
+        { x: srcW, y: srcH },
+        { x: 0, y: srcH }
+      ];
+
+      // Solve homography H such that [X Y 1]^T ~ H * [x y 1]^T.
+      // We solve 8 unknowns (h00..h21, with h22 fixed to 1) using 4 corner pairs.
+      function computeHomography(src, dst) {
+        const A = [];
+        const b = [];
+
+        for (let i = 0; i < 4; i++) {
+          const { x, y } = src[i];
+          const { x: X, y: Y } = dst[i];
+
+          A.push([x, y, 1, 0, 0, 0, -x * X, -y * X]);
+          b.push(X);
+          A.push([0, 0, 0, x, y, 1, -x * Y, -y * Y]);
+          b.push(Y);
+        }
+
+        const h = solveLinearSystem(A, b);
+        return [
+          [h[0], h[1], h[2]],
+          [h[3], h[4], h[5]],
+          [h[6], h[7], 1]
+        ];
+      }
+
+      // Tiny Gaussian-elimination solver for dense n x n systems.
+      function solveLinearSystem(A, b) {
+        const n = b.length;
+        const M = A.map((row, i) => [...row, b[i]]);
+
+        for (let c = 0; c < n; c++) {
+          let pivot = c;
+          for (let r = c + 1; r < n; r++) {
+            if (Math.abs(M[r][c]) > Math.abs(M[pivot][c])) pivot = r;
+          }
+          [M[c], M[pivot]] = [M[pivot], M[c]];
+
+          const div = M[c][c] || 1e-9;
+          for (let k = c; k <= n; k++) M[c][k] /= div;
+
+          for (let r = 0; r < n; r++) {
+            if (r === c) continue;
+            const factor = M[r][c];
+            for (let k = c; k <= n; k++) M[r][k] -= factor * M[c][k];
+          }
+        }
+
+        return M.map((row) => row[n]);
+      }
+
+      function invert3x3(m) {
+        const [a, b, c] = m[0];
+        const [d, e, f] = m[1];
+        const [g, h, i] = m[2];
+        const A = e * i - f * h;
+        const B = c * h - b * i;
+        const C = b * f - c * e;
+        const D = f * g - d * i;
+        const E = a * i - c * g;
+        const F = c * d - a * f;
+        const G = d * h - e * g;
+        const H = b * g - a * h;
+        const I = a * e - b * d;
+        const det = a * A + b * D + c * G || 1e-9;
+        return [
+          [A / det, B / det, C / det],
+          [D / det, E / det, F / det],
+          [G / det, H / det, I / det]
+        ];
+      }
+
+      function project(m, x, y) {
+        const X = m[0][0] * x + m[0][1] * y + m[0][2];
+        const Y = m[1][0] * x + m[1][1] * y + m[1][2];
+        const W = m[2][0] * x + m[2][1] * y + m[2][2];
+        return { x: X / W, y: Y / W };
+      }
+
+      // Paint image by inverse mapping:
+      // for each destination pixel, pull color from source through H^-1.
+      // Inverse mapping avoids holes that forward mapping can leave.
+      function warpImageNearest(srcCanvas, dstCtx, dstW, dstH, H, clear = true) {
+        const srcCtx = srcCanvas.getContext('2d');
+        const src = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
+        const out = dstCtx.createImageData(dstW, dstH);
+        const invH = invert3x3(H);
+
+        if (clear) {
+          for (let i = 0; i < out.data.length; i += 4) out.data[i + 3] = 255;
+        }
+
+        for (let Y = 0; Y < dstH; Y++) {
+          for (let X = 0; X < dstW; X++) {
+            const p = project(invH, X, Y);
+            const sx = Math.round(p.x);
+            const sy = Math.round(p.y);
+            const outIdx = (Y * dstW + X) * 4;
+
+            if (sx >= 0 && sx < srcCanvas.width && sy >= 0 && sy < srcCanvas.height) {
+              const srcIdx = (sy * srcCanvas.width + sx) * 4;
+              out.data[outIdx] = src.data[srcIdx];
+              out.data[outIdx + 1] = src.data[srcIdx + 1];
+              out.data[outIdx + 2] = src.data[srcIdx + 2];
+              out.data[outIdx + 3] = 255;
+            } else {
+              out.data[outIdx] = 17;
+              out.data[outIdx + 1] = 17;
+              out.data[outIdx + 2] = 17;
+              out.data[outIdx + 3] = 255;
+            }
+          }
+        }
+        dstCtx.putImageData(out, 0, 0);
+      }
+
+      function drawQuadOutline(ctx, quad, color) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(quad[0].x, quad[0].y);
+        for (let i = 1; i < quad.length; i++) ctx.lineTo(quad[i].x, quad[i].y);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      function shiftedQuad(dx, dy) {
+        // Simulated camera move:
+        // nearer corners shift more than farther corners in apparent image space.
+        const depthWeight = [1.2, 1.1, 0.55, 0.6];
+        return paintQuad.map((p, i) => ({
+          x: p.x + dx * depthWeight[i],
+          y: p.y + dy * depthWeight[i]
+        }));
+      }
+
+      function render() {
+        // 1) Distorted paint (anamorphic image on a flat surface)
+        const HsrcToPaint = computeHomography(rectCorners, paintQuad);
+        warpImageNearest(sourceCanvas, paintCtx, paintCanvas.width, paintCanvas.height, HsrcToPaint);
+
+        paintCtx.fillStyle = '#e5e5e5';
+        paintCtx.font = '14px system-ui';
+        paintCtx.fillText('Distorted paint on flat surface', 14, 20);
+        drawQuadOutline(paintCtx, paintQuad, '#ffe269');
+
+        // 2) Simulated viewer reconstruction from an estimated perspective.
+        // At sweet spot (dx=dy=0), we use the exact calibration quad and recover source.
+        // At other values, corner estimate is wrong -> image no longer reads correctly.
+        const dx = Number(offsetX.value);
+        const dy = Number(offsetY.value);
+        const observedQuad = shiftedQuad(dx, dy);
+        const HobservedToRect = computeHomography(observedQuad, rectCorners);
+
+        const paintedImage = paintCtx.getImageData(0, 0, paintCanvas.width, paintCanvas.height);
+        const paintedCanvas = document.createElement('canvas');
+        paintedCanvas.width = paintCanvas.width;
+        paintedCanvas.height = paintCanvas.height;
+        paintedCanvas.getContext('2d').putImageData(paintedImage, 0, 0);
+
+        warpImageNearest(paintedCanvas, viewCtx, viewCanvas.width, viewCanvas.height, HobservedToRect);
+
+        viewCtx.fillStyle = '#e5e5e5';
+        viewCtx.font = '14px system-ui';
+        viewCtx.fillText(`Recovered view (offsetX=${dx}, offsetY=${dy})`, 14, 20);
+        drawQuadOutline(viewCtx, observedQuad, 'rgba(255,120,120,0.65)');
+      }
+
+      drawSource();
+      offsetX.addEventListener('input', render);
+      offsetY.addEventListener('input', render);
+      render();
+    </script>
+  </body>
+</html>
